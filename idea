@@ -1,0 +1,233 @@
+#!/bin/bash
+
+SCRATCH="${HOME}/.ideapool"
+NOTES="${SCRATCH}/notes"
+NAMEDNOTES="${SCRATCH}/namedNotes"
+MACROS="${SCRATCH}/macros"
+
+if [ "${VIEWER}" == "" ]; then
+	VIEWER=cat
+fi
+
+function log(){
+	echo $1 1>&2
+}
+
+function die(){
+	log $1
+	kill -s 2 ${BASHPID}
+}
+
+function requireDir(){
+	if [ ! -e $1 ]; then
+		mkdir $1
+		log "ディレクトリを作成しました。"$1
+	elif [ ! -d $1 ]; then
+		log "ファイルが既に存在します。"$1
+		read -p "削除しますか？[y/N]" input 1>&2
+		case ${input} in
+			[yY]*)
+				rm $1
+				log "削除しました。"
+				mkdir $1
+				log "ディレクトリを作成しました。"$1
+				;;
+			*)
+				die "中断しました。";;
+		esac
+	fi
+}
+
+function requireDirs(){
+	requireDir ${SCRATCH}
+	requireDir ${NOTES}
+	requireDir ${NAMEDNOTES}
+	requireDir ${MACROS}
+}
+
+function generate(){
+	requireDirs
+	DATE=`date +"%Y-%m-%d"`
+
+	NO=0
+
+	while [ -e ${NOTES}/${DATE}-${NO} ];
+	do
+		NO=$((${NO}+1))
+	done
+
+	RES="${NOTES}/${DATE}-${NO}"
+	touch ${RES}
+	echo ${RES}
+}
+
+
+function getpathByAbsoluteID(){
+	if [ -e "${NOTES}/$1" ]; then
+		echo "${NOTES}/$1"
+		return
+	else
+		die "そのようなノートは存在しません。(絶対ID:$1)"
+	fi
+}
+
+function getpathByRelativeID(){
+	if [ $1 -ge `ls ${NOTES}|wc -l` ]; then
+		die "そのようなノートは存在しません。(相対ID:$1)"
+	fi
+	item=`ls ${NOTES}|sort -rV |head -n $(($1 + 1))|tail -n 1`
+	if [ "${item}" != "" ]; then
+		echo "${NOTES}/${item}"
+		return
+	else
+		die "そのようなノートは存在しません。(相対ID:$1)"
+	fi
+}
+
+function getpath(){
+	requireDirs
+	if [ "$1" == "" ]; then
+		getpathByRelativeID 0
+	else
+		if echo $1 | grep -e "^[0-9]*-[0-9]*-[0-9]*-[0-9]*$" 1>/dev/null; then
+			getpathByAbsoluteID $1
+		elif echo $1 | grep -e "^[0-9]*$" 1>/dev/null; then
+			getpathByRelativeID $1
+		else
+			if [ -e "${NAMEDNOTES}/$1" ]; then
+				echo "${NAMEDNOTES}/$1"
+			else
+				die "そのようなノートはありません。($1)"
+			fi
+		fi
+	fi
+}
+
+function edit(){
+	${EDITOR} $(getpath $1)
+}
+
+function new(){
+	generate
+	edit
+}
+
+function view(){
+	${VIEWER} $(getpath $1)
+}
+
+
+function nameCheck(){
+	if [ "$1" == "" ]; then
+		die "名前が存在しません。"
+	elif [ -e "${NAMEDNOTES}/$1" ]; then
+		die "既に同じ名前のノートが存在します。"
+	elif echo $1 | grep -e "^[0-9]*-[0-9]*-[0-9]*-[0-9]*$" 1>/dev/null; then
+		die "形式が不正です。"
+	elif echo $1 | grep -e "^[0-9]*$" 1>/dev/null; then
+		die "形式が不正です。"
+	fi
+}
+
+function name(){
+	requireDirs
+	nameCheck $2
+	mv $(getpath $1) "${NAMEDNOTES}/$2"
+}
+
+function rename(){
+	requireDirs
+	nameCheck $2
+	mv "${NAMEDNOTES}/$1" "${NAMEDNOTES}/$2"
+}
+
+function list(){
+	requireDirs
+	no=0
+	ls ${NAMEDNOTES}
+	for noteName in `ls ${NOTES}|sort -rV`
+	do
+		echo -e "${no}\t${noteName}"
+		no=$((${no} + 1))
+	done
+}
+
+function search(){
+	requireDirs
+	pushd ${NOTES} 1>/dev/null
+		for i in $(ls)
+		do
+			if grep $i -e $1 1>/dev/null 2>/dev/null; then
+				echo "=== in $i ==="
+				grep $i -e $1
+			fi
+		done
+	popd 1>/dev/null
+	pushd ${NAMEDNOTES} 1>/dev/null
+		for i in $(ls)
+		do
+			if grep $i -e $1 1>/dev/null 2>/dev/null; then
+				echo "=== in $i ==="
+				grep $i -e $1
+			fi
+		done
+	popd 1>/dev/null
+}
+
+function del(){
+	if [ "$1" == "" ]; then
+		die "削除対象を指定してください。"
+	fi
+	rm $(getpath $1)
+}
+
+case $1 in
+	"new") new;;
+	"edit") edit $2;;
+	"view") view $2;;
+	"name")
+		if [ $# -eq 3 ]; then
+			name $2 $3
+		elif [ $# -eq 2 ]; then
+			name "" $2
+		fi;;
+	"rename") rename $2 $3;;
+	"del") del $2;;
+	"list") list;;
+	"search") search $2;;
+	"macro")
+		requireDirs
+		case $2 in
+			"add")
+				cp $4 ${MACROS}/$3;;
+			"del")
+				rm ${MACROS}/$3;;
+			"list")
+				ls ${MACROS};;
+			*)
+				echo "使用法: idea macro [add <マクロ名> <スクリプト>] [del <マクロ名>] [list]"
+				echo "add	スクリプトをマクロとして登録します。"
+				echo "del	マクロを削除します。"
+				echo "list	マクロを一覧表示します。"
+				;;
+		esac;;
+	*)
+		if [ "$1" != "" -a -e "${MACROS}/$1" ]; then
+			requireDirs
+			source ${MACROS}/$1
+			macro_main "${@:2}"
+		else
+			echo "使用法: idea <コマンド> [<引数>]"
+			echo "コマンド一覧:"
+			echo "new	新たにノートを作成し、編集します。"
+			echo "edit	既存のノートを編集します。"
+			echo "view	既存のノートを閲覧します。"
+			echo "name	無名のノートに名前をつけます。"
+			echo "rename	名前がついているノートの名前を変更します。"
+			echo "del	ノートを削除します。"
+			echo "list	ノートのリストを表示します。"
+			echo "search	全てのノートから特定の文言を検索します。"
+			echo "macro	マクロの管理をします。"
+		fi
+		;;
+esac
